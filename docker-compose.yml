@@ -1,0 +1,25 @@
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-bus_telemetry_dev}
+      POSTGRES_USER: ${POSTGRES_USER:-bus_telemetry_dev}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bus_telemetry_dev_password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-bus_telemetry_dev} -d ${POSTGRES_DB:-bus_telemetry_dev}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  postgres_data:
