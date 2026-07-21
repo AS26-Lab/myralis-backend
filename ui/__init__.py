@@ -1,2 +1,1 @@
-"""Desktop UI package for PYTHON_AI_ASSISTANT."""
-
+"""Desktop UI package for MyralisBackend."""

@@ -163,7 +163,26 @@ class VoiceCustomizationTests(unittest.TestCase):
 
         output = "\n".join(logs.output)
         self.assertEqual(final_voice_id, "selected-voice")
-        self.assertIn("Custom voice enabled but custom_voice_id is empty", output)
+        self.assertIn("Custom voice enabled but custom_voice_id is invalid", output)
+        self.assertIn("Final voice resolved: selected-voice", output)
+
+    def test_invalid_custom_voice_id_falls_back_safely_when_custom_voice_enabled(self) -> None:
+        manager = ConversationManager.__new__(ConversationManager)
+        settings = {
+            "elevenlabs": {"voice_id": "legacy-voice"},
+            "customization": {
+                "voice_id": "selected-voice",
+                "use_custom_voice": True,
+                "custom_voice_id": "Eleven Labs Voicfjfjfge ID",
+            },
+        }
+
+        with self.assertLogs("core.conversation_manager", level="INFO") as logs:
+            final_voice_id = manager._resolve_final_voice_id(settings)
+
+        output = "\n".join(logs.output)
+        self.assertEqual(final_voice_id, "selected-voice")
+        self.assertIn("Custom voice enabled but custom_voice_id is invalid", output)
         self.assertIn("Final voice resolved: selected-voice", output)
 
     def test_realtime_tts_receives_final_voice_without_changing_model(self) -> None:
@@ -185,7 +204,7 @@ class VoiceCustomizationTests(unittest.TestCase):
                     "model_id": "eleven_turbo_v2_5",
                     "output_format": "pcm_24000",
                     "save_response_wav": False,
-                    "websocket_audio_chunk_ms": 20,
+                    "websocket_audio_chunk_ms": 200,
                     "websocket_audio_realtime_pacing": True,
                     "voice_speed": "normal",
                 },
@@ -202,6 +221,7 @@ class VoiceCustomizationTests(unittest.TestCase):
                     mood="Neutral",
                     settings=settings,
                     state_callback=None,
+                    thinking_started_at=0.0,
                 )
             finally:
                 manager.shutdown()

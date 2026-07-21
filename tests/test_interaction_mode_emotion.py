@@ -102,7 +102,7 @@ class InteractionModeEmotionTests(unittest.TestCase):
         manager.post_talking_idle_delay_seconds = 0.0
         return manager
 
-    def test_text_mode_text_input_enters_listening_but_skips_emotion_analysis(
+    def test_text_mode_text_input_enters_thinking_but_skips_emotion_analysis(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -132,26 +132,40 @@ class InteractionModeEmotionTests(unittest.TestCase):
                         settings_manager.get_settings(),
                         state_callback=states.append,
                     )
+                with patch(
+                    "core.conversation_manager.time.sleep",
+                    return_value=None,
+                ), patch(
+                    "core.conversation_manager.threading.Thread",
+                    side_effect=lambda *args, **kwargs: SimpleNamespace(
+                        start=lambda: kwargs["target"](*kwargs.get("args", ()))
+                    ),
+                ), patch(
+                    "core.conversation_manager.send_json_to_unreal_blocking",
+                    side_effect=capture_payload,
+                ):
+                    manager.handle_unreal_websocket_message(
+                        {"type": "settings_action", "action": "audio_finished"}
+                    )
             finally:
                 manager.shutdown()
 
         self.assertEqual(result.response.text, "Entiendo la entrada y sigo con la respuesta.")
-        self.assertIn(AssistantState.LISTENING, states)
         self.assertIn(AssistantState.THINKING, states)
         self.assertIn(AssistantState.TALKING, states)
         self.assertIn(AssistantState.IDLE, states)
         self.assertTrue(
             any("Listening emotion analysis skipped: text mode" in line for line in logs.output)
         )
-        listening_payloads = [
+        thinking_payloads = [
             payload
             for payload in sent_payloads
             if payload.get("type") == "runtime_state"
-            and payload.get("state") == "listening"
+            and payload.get("state") == "thinking"
         ]
-        self.assertTrue(listening_payloads)
+        self.assertTrue(thinking_payloads)
         self.assertTrue(
-            all(payload["audio_mode"] == "none" for payload in listening_payloads)
+            all(payload["audio_mode"] == "none" for payload in thinking_payloads)
         )
 
     def test_text_mode_partial_stt_does_not_run_listening_emotion_analysis(self) -> None:

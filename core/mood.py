@@ -73,60 +73,60 @@ ELEVENLABS_MOOD_PROFILES: dict[str, dict[str, float | bool]] = {
         "speed": 1.00,
     },
     "Happy": {
-        "stability": 0.45,
-        "similarity_boost": 0.75,
-        "style": 0.25,
+        "stability": 0.38,
+        "similarity_boost": 0.73,
+        "style": 0.38,
         "use_speaker_boost": True,
-        "speed": 1.03,
+        "speed": 1.05,
     },
     "Sad": {
-        "stability": 0.70,
-        "similarity_boost": 0.80,
-        "style": 0.15,
+        "stability": 0.48,
+        "similarity_boost": 0.78,
+        "style": 0.40,
         "use_speaker_boost": True,
-        "speed": 0.92,
+        "speed": 0.85,
     },
     "Disgust": {
-        "stability": 0.50,
-        "similarity_boost": 0.75,
-        "style": 0.30,
+        "stability": 0.45,
+        "similarity_boost": 0.74,
+        "style": 0.38,
         "use_speaker_boost": True,
-        "speed": 0.96,
+        "speed": 0.95,
     },
     "Anger": {
+        "stability": 0.28,
+        "similarity_boost": 0.76,
+        "style": 0.60,
+        "use_speaker_boost": True,
+        "speed": 1.08,
+    },
+    "Surprise": {
+        "stability": 0.28,
+        "similarity_boost": 0.74,
+        "style": 0.52,
+        "use_speaker_boost": True,
+        "speed": 1.12,
+    },
+    "Fear": {
         "stability": 0.35,
-        "similarity_boost": 0.78,
+        "similarity_boost": 0.76,
         "style": 0.45,
         "use_speaker_boost": True,
         "speed": 1.06,
     },
-    "Surprise": {
-        "stability": 0.35,
-        "similarity_boost": 0.75,
-        "style": 0.40,
-        "use_speaker_boost": True,
-        "speed": 1.08,
-    },
-    "Fear": {
-        "stability": 0.42,
-        "similarity_boost": 0.78,
-        "style": 0.35,
-        "use_speaker_boost": True,
-        "speed": 1.04,
-    },
     "Confident": {
-        "stability": 0.62,
+        "stability": 0.58,
         "similarity_boost": 0.80,
-        "style": 0.12,
+        "style": 0.18,
         "use_speaker_boost": True,
-        "speed": 1.00,
+        "speed": 1.01,
     },
     "Excited": {
-        "stability": 0.32,
-        "similarity_boost": 0.75,
-        "style": 0.55,
+        "stability": 0.26,
+        "similarity_boost": 0.73,
+        "style": 0.68,
         "use_speaker_boost": True,
-        "speed": 1.10,
+        "speed": 1.14,
     },
     "Bored": {
         "stability": 0.80,
@@ -136,18 +136,18 @@ ELEVENLABS_MOOD_PROFILES: dict[str, dict[str, float | bool]] = {
         "speed": 0.90,
     },
     "Playful": {
-        "stability": 0.40,
-        "similarity_boost": 0.75,
-        "style": 0.42,
+        "stability": 0.34,
+        "similarity_boost": 0.74,
+        "style": 0.54,
         "use_speaker_boost": True,
-        "speed": 1.06,
+        "speed": 1.08,
     },
     "Confused": {
-        "stability": 0.55,
-        "similarity_boost": 0.76,
-        "style": 0.22,
+        "stability": 0.48,
+        "similarity_boost": 0.75,
+        "style": 0.30,
         "use_speaker_boost": True,
-        "speed": 0.97,
+        "speed": 0.98,
     },
 }
 
@@ -278,6 +278,8 @@ def prepare_text_for_elevenlabs(text: str, mood: str) -> str:
 
     if clean_mood in {"Sad", "Bored"}:
         prepared = re.sub(r"!+", ".", prepared)
+        if clean_mood == "Sad":
+            prepared = _soften_to_sad_tone(prepared)
     elif clean_mood == "Fear":
         prepared = re.sub(r"!{2,}", "!", prepared)
     elif clean_mood == "Anger":
@@ -395,6 +397,16 @@ def _replace_final_period(text: str, replacement: str) -> str:
     if text.endswith("."):
         return text[:-1] + replacement
     return text
+
+
+def _soften_to_sad_tone(text: str) -> str:
+    if len(text) > 180:
+        return text
+    if text.endswith(("...", "?", "!")):
+        return text
+    if text.endswith("."):
+        return text[:-1] + "..."
+    return text + "..."
 
 
 def _user_confronts(user_text: str) -> bool:

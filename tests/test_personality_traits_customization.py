@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 from core.conversation_manager import ConversationManager
 from core.personality import (
+    DEFAULT_PERSONALITY_PROMPT,
     build_customization_personality_prompt,
     parse_personality_traits,
 )
@@ -95,6 +96,44 @@ class PersonalityTraitsCustomizationTests(unittest.TestCase):
         finally:
             shutil.rmtree(temp_dir)
 
+    def test_settings_update_saves_custom_personality_prompt_fields(self) -> None:
+        temp_dir = tempfile.mkdtemp()
+        try:
+            settings_manager = SettingsManager(Path(temp_dir))
+            manager = ConversationManager.__new__(ConversationManager)
+            manager._lock = threading.RLock()
+            manager.audio_manager = SimpleNamespace(settings_manager=settings_manager)
+
+            handled_toggle = manager.handle_unreal_websocket_message(
+                {
+                    "type": "settings_update",
+                    "setting": "use_custom_personality_prompt",
+                    "value_type": "bool",
+                    "value": "true",
+                }
+            )
+            handled_prompt = manager.handle_unreal_websocket_message(
+                {
+                    "type": "settings_update",
+                    "setting": "custom_personality_prompt",
+                    "value_type": "text",
+                    "value": "Eres Myralis con tono tecnico y cercano.",
+                }
+            )
+
+            self.assertTrue(handled_toggle)
+            self.assertTrue(handled_prompt)
+            settings = settings_manager.get_settings()
+            self.assertTrue(
+                settings["customization"]["use_custom_personality_prompt"]
+            )
+            self.assertEqual(
+                settings["customization"]["custom_personality_prompt"],
+                "Eres Myralis con tono tecnico y cercano.",
+            )
+        finally:
+            shutil.rmtree(temp_dir)
+
     def test_conversation_prompt_includes_customization_traits_section(self) -> None:
         manager = ConversationManager.__new__(ConversationManager)
 
@@ -107,12 +146,33 @@ class PersonalityTraitsCustomizationTests(unittest.TestCase):
 
         self.assertIn("Base prompt.", prompt)
         self.assertIn("Customization / Personality:", prompt)
+        self.assertIn(DEFAULT_PERSONALITY_PROMPT, prompt)
         self.assertIn("profesional", prompt)
         self.assertIn("reduce rodeos", prompt)
         self.assertIn("Razona con orden", prompt)
         self.assertIn("Estado emocional actual", prompt)
 
-    def test_character_identity_comes_from_base_prompt_only(self) -> None:
+    def test_custom_personality_prompt_is_mixed_with_traits(self) -> None:
+        manager = ConversationManager.__new__(ConversationManager)
+
+        prompt = manager._build_system_prompt_with_mood(
+            "Base prompt.",
+            "Neutral",
+            80,
+            {
+                "use_custom_personality_prompt": True,
+                "custom_personality_prompt": "Eres Myralis con energia calmada.",
+                "personality_traits": "directa,analitica",
+            },
+        )
+
+        self.assertIn("Base prompt.", prompt)
+        self.assertIn("Eres Myralis con energia calmada.", prompt)
+        self.assertNotIn(DEFAULT_PERSONALITY_PROMPT, prompt)
+        self.assertIn("reduce rodeos", prompt)
+        self.assertIn("Razona con orden", prompt)
+
+    def test_default_personality_prompt_is_mixed_with_base_prompt(self) -> None:
         manager = ConversationManager.__new__(ConversationManager)
 
         prompt = manager._build_system_prompt_with_mood(
@@ -123,7 +183,7 @@ class PersonalityTraitsCustomizationTests(unittest.TestCase):
         )
 
         self.assertIn("Eres Panfila", prompt)
-        self.assertNotIn("Personalidad base de la IA", prompt)
+        self.assertIn(DEFAULT_PERSONALITY_PROMPT, prompt)
         self.assertNotIn("Nombre:", prompt)
         self.assertNotIn("Edad:", prompt)
         self.assertNotIn("Genero:", prompt)

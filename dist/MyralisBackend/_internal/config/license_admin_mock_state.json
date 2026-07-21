@@ -1,0 +1,28 @@
+{
+  "users": {
+    "integration@test.com": {
+      "id": "d3684e2d28f72be5c64bf1e4c5ea7819",
+      "email": "integration@test.com",
+      "role": "admin",
+      "created_at": "2026-07-07T17:18:51.691097+00:00"
+    }
+  },
+  "licenses": {
+    "MYR-C4E57588-34DB9138": {
+      "id": "808bedb7607d639754b717258a5093d3",
+      "license_key": "MYR-C4E57588-34DB9138",
+      "user_id": "d3684e2d28f72be5c64bf1e4c5ea7819",
+      "email": "integration@test.com",
+      "client_name": "Museo Integration",
+      "plan_name": "Beta",
+      "credits_balance": 100.0,
+      "status": "suspended",
+      "developer_mode_allowed": false,
+      "expires_at": "2026-09-01",
+      "created_at": "2026-07-07T17:18:51.691097+00:00",
+      "updated_at": "2026-07-07T17:18:51.691097+00:00"
+    }
+  },
+  "credit_ledger": [],
+  "activation_codes": {}
+}

@@ -7,10 +7,12 @@ import logging
 import os
 import queue
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlencode
+
+from core.runtime_paths import get_runtime_paths
 
 try:
     from dotenv import load_dotenv
@@ -257,7 +259,11 @@ class DeepgramSTTManager:
         stop_event: threading.Event,
         audio_queue: queue.Queue[bytes | None],
     ) -> None:
-        url = self._build_listen_url(config)
+        effective_config = self._effective_config_for_input_device(
+            config,
+            input_device_index,
+        )
+        url = self._build_listen_url(effective_config)
         headers = {"Authorization": f"Token {config.api_key}"}
         connect_kwargs = _websocket_header_kwargs(headers)
         stream: Any | None = None
@@ -267,7 +273,7 @@ class DeepgramSTTManager:
             async with websockets.connect(url, **connect_kwargs) as websocket:
                 LOGGER.info("Deepgram connection opened")
                 stream = self._start_microphone_stream(
-                    config,
+                    effective_config,
                     input_device_index,
                     stop_event,
                     audio_queue,
@@ -513,6 +519,109 @@ class DeepgramSTTManager:
             ),
         )
 
+    def _effective_config_for_input_device(
+        self,
+        config: DeepgramSTTConfig,
+        input_device_index: int | None,
+    ) -> DeepgramSTTConfig:
+        if sd is None:
+            return config
+
+        for candidate_sample_rate in self._input_sample_rate_candidates(
+            input_device_index,
+            config.sample_rate,
+        ):
+            if candidate_sample_rate == config.sample_rate:
+                if self._can_open_input_device(
+                    input_device_index,
+                    config.channels,
+                    candidate_sample_rate,
+                ):
+                    return config
+                continue
+
+            if self._can_open_input_device(
+                input_device_index,
+                config.channels,
+                candidate_sample_rate,
+            ):
+                LOGGER.info(
+                    "Deepgram input fallback sample_rate=%s for device=%s",
+                    candidate_sample_rate,
+                    input_device_index,
+                )
+                return replace(config, sample_rate=candidate_sample_rate)
+
+        return config
+
+    def _input_sample_rate_candidates(
+        self,
+        input_device_index: int | None,
+        requested_sample_rate: int,
+    ) -> list[int]:
+        candidates: list[int] = []
+
+        def add_candidate(value: Any) -> None:
+            try:
+                rate = int(float(value))
+            except (TypeError, ValueError):
+                return
+            if rate <= 0 or rate in candidates:
+                return
+            candidates.append(rate)
+
+        add_candidate(requested_sample_rate)
+        add_candidate(self._device_default_sample_rate(input_device_index))
+        for rate in (48000, 44100, 32000, 24000, 22050, 16000, 11025, 8000):
+            add_candidate(rate)
+        return candidates
+
+    def _device_default_sample_rate(self, input_device_index: int | None) -> int | None:
+        if sd is None or input_device_index is None:
+            return None
+        try:
+            raw_devices = sd.query_devices()
+        except Exception:
+            LOGGER.debug("Could not query Deepgram input device sample rate", exc_info=True)
+            return None
+
+        if not isinstance(raw_devices, list):
+            return None
+        if input_device_index < 0 or input_device_index >= len(raw_devices):
+            return None
+
+        device = raw_devices[input_device_index]
+        if not isinstance(device, dict):
+            return None
+        try:
+            return int(float(device.get("default_samplerate", 0)))
+        except (TypeError, ValueError):
+            return None
+
+    def _can_open_input_device(
+        self,
+        input_device_index: int | None,
+        channels: int,
+        sample_rate: int,
+    ) -> bool:
+        if sd is None:
+            return False
+        try:
+            sd.check_input_settings(
+                device=input_device_index,
+                channels=channels,
+                samplerate=sample_rate,
+            )
+            return True
+        except Exception:
+            LOGGER.debug(
+                "Input device rejected sample_rate=%s device=%s",
+                sample_rate,
+                input_device_index,
+                exc_info=True,
+            )
+            return False
+
     def _build_listen_url(self, config: DeepgramSTTConfig) -> str:
         params: dict[str, str | int] = {
             "model": config.model,
@@ -535,7 +644,12 @@ class DeepgramSTTManager:
         if self._env_loaded:
             return
         if load_dotenv is not None:
-            load_dotenv(self.root / ".env")
+            runtime_paths = get_runtime_paths(self.root)
+            external_env = runtime_paths.external_config_root / ".env"
+            if external_env.exists():
+                load_dotenv(external_env)
+            elif (self.root / ".env").exists():
+                load_dotenv(self.root / ".env")
         self._env_loaded = True
 
     def _put_stop_marker(self, audio_queue: queue.Queue[bytes | None]) -> None:

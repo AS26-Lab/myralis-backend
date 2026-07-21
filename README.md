@@ -1,11 +1,11 @@
-# PYTHON_AI_ASSISTANT
+# MyralisBackend
 
-Asistente local de escritorio para Windows construido con Python 3.11 y PySide6. Incluye conversacion por texto y voz, integracion con OpenAI, TTS con ElevenLabs, seleccion persistente de dispositivos, TEST MODE, WebSocket local para Unreal y una UI tecnica de debug.
+Backend local de escritorio para Windows construido con Python 3.11 y PySide6. Incluye conversacion por texto y voz, integracion con OpenAI, TTS con ElevenLabs, seleccion persistente de dispositivos, TEST MODE, WebSocket local para Unreal y una UI tecnica de debug.
 
 ## Estructura
 
 ```text
-PYTHON_AI_ASSISTANT/
+MyralisBackend/
 |-- main.py
 |-- requirements.txt
 |-- config/
@@ -57,12 +57,26 @@ DEEPGRAM_API_KEY=tu_api_key
 python main.py
 ```
 
-La UI tecnica puede abrirse con `Ctrl+Shift+D`, incluso si Unreal esta desconectado.
+La UI tecnica solo puede abrirse con `Ctrl+Shift+D` cuando la sesion validada tiene autorizacion de admin.
 
 ## Configuracion
 
 - `config/settings.json`: settings tecnicos, modelos, voz, customization recibida desde Unreal y TEST MODE.
 - `config/devices.json`: dispositivo de entrada y salida seleccionados.
+
+## Ruta y nombre oficiales
+
+- Nombre oficial del backend: `MyralisBackend`
+- Nombre visible del producto: `Myralis Backend`
+- Servicio logico: `myralis-backend`
+- Ejecutable futuro: `MyralisBackend.exe`
+
+Durante la migracion temporal, el launcher puede aceptar la carpeta legacy `PYTHON_AI_ASSISTANT` como fallback solo por compatibilidad explicita.
+
+## Reportes
+
+- [`PRICING_REPORT.md`](./PRICING_REPORT.md): reporte separado con la equivalencia actual de tokens a USD y ejemplos de uso.
+- [`docs/runtime-layout.md`](./docs/runtime-layout.md): layout runtime, resolucion portable y pasos de renombrado manual.
 
 ## Customization
 
@@ -82,6 +96,6 @@ Cuando `TEST MODE` esta activado:
 
 La app puede enviar audio a Unreal por WebSocket y mantiene `output/runtime/current_response.wav` como salida runtime. La reproduccion local en Python permanece apagada por defecto para evitar audio duplicado; activala con `TEST MODE CON AUDIO` solo para pruebas locales.
 
-## Empaquetado futuro
+## Empaquetado
 
-El codigo evita rutas absolutas. En ejecucion normal usa el directorio del proyecto; en PyInstaller usara el directorio del ejecutable como raiz writable para `config`, `output` y `assets`.
+Ver [`docs/backend-packaging.md`](./docs/backend-packaging.md) para el flujo onedir, icono, paths portables, autorizacion de debug y despliegue local.

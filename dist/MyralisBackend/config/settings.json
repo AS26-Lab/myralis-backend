@@ -1,0 +1,113 @@
+{
+  "talk_hotkey": "F8",
+  "interaction_mode": "voice",
+  "neutral_return_time": 45,
+  "ui_volume": 0.5,
+  "avatar_voice_volume": 0.8,
+  "input_volume": 0.8,
+  "input_device": "default",
+  "output_device": "default",
+  "stt_engine": "local",
+  "current_language": "spanish",
+  "display_mode": "borderless",
+  "fps_limit": "60",
+  "performance_profile": "balanced",
+  "openai_model": "gpt-5.4-mini",
+  "response_length": "short",
+  "history_level": "normal",
+  "elevenlabs_model": "eleven_turbo_v2_5",
+  "voice_speed": "normal",
+  "tts_realtime": false,
+  "listening_emotion_analysis": true,
+  "app": {
+    "hotkey": "F8",
+    "interaction_mode": "voice",
+    "neutral_return_time": 45,
+    "state_poll_interval_ms": 100,
+    "use_websocket_runtime_state": true
+  },
+  "openai": {
+    "model": "gpt-5.4-mini",
+    "temperature": 0.4,
+    "max_response_words": 64,
+    "history_limit": 16,
+    "reasoning_effort": "low",
+    "system_prompt": "You are a concise conversational assistant. Return only valid JSON with this shape: {\"text\":\"assistant reply\",\"emotion\":\"neutral\"}. Use the user's language."
+  },
+  "elevenlabs": {
+    "voice_id": "JBFqnCBsd6RMkjVDRZzb",
+    "model_id": "eleven_turbo_v2_5",
+    "output_format": "pcm_16000",
+    "use_realtime_tts_streaming": false,
+    "save_response_wav": true,
+    "optimize_streaming_latency": 2,
+    "websocket_audio_start_silence_chunks": 2,
+    "websocket_audio_fade_in_ms": 15,
+    "websocket_audio_chunk_ms": 200,
+    "websocket_audio_realtime_pacing": true,
+    "voice_speed": "normal"
+  },
+  "deepgram": {
+    "enabled": false,
+    "api_key": "",
+    "language": "es",
+    "model": "nova-3",
+    "sample_rate": 16000,
+    "interim_results": true,
+    "endpointing": true,
+    "utterance_end_ms": 1000,
+    "vad_events": true,
+    "smart_format": true,
+    "punctuate": true,
+    "audio_block_ms": 50
+  },
+  "audio": {
+    "sample_rate": 16000,
+    "auto_play": false,
+    "ui_volume": 0.5,
+    "avatar_voice_volume": 0.8,
+    "input_volume": 0.8
+  },
+  "test_mode": {
+    "enabled": false,
+    "audio_enabled": false,
+    "miralys_tokens_remaining": 0,
+    "miralys_tokens_purchased": 0,
+    "miralys_tokens_used": 0
+  },
+  "usage_adaptation": {
+    "enabled": true,
+    "alpha": 0.25,
+    "profiles": {
+      "voice": {
+        "samples": 0,
+        "ema_user_words": 10.0,
+        "ema_assistant_words": 32.0,
+        "ema_turn_words": 42.0,
+        "ema_cost_multiplier": 1.0,
+        "last_update_utc": null
+      },
+      "text": {
+        "samples": 0,
+        "ema_user_words": 8.0,
+        "ema_assistant_words": 28.0,
+        "ema_turn_words": 36.0,
+        "ema_cost_multiplier": 1.0,
+        "last_update_utc": null
+      }
+    }
+  },
+  "customization": {
+    "personality_traits": "",
+    "use_custom_personality_prompt": false,
+    "custom_personality_prompt": "Eres Myralis, una asistente de inteligencia artificial conversacional. Habla de forma natural, clara y amigable, adaptando tu estilo al contexto y a las necesidades del usuario. Tu objetivo es mantener conversaciones utiles, agradables y faciles de entender.\n\nResponde con precision y sinceridad. Si algo no esta claro, pide mas informacion antes de asumir detalles. Si no sabes algo o no tienes suficiente informacion, dilo de forma transparente. Prioriza siempre la utilidad, la claridad y una experiencia de conversacion fluida.",
+    "profanity_filter": true,
+    "voice_id": "JBFqnCBsd6RMkjVDRZzb",
+    "use_custom_voice": false,
+    "custom_voice_id": "",
+    "selected_character": "",
+    "selected_personality": "",
+    "voice_style": "",
+    "character_personality": ""
+  }
+}

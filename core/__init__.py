@@ -1,2 +1,1 @@
-"""Core services for PYTHON_AI_ASSISTANT."""
-
+"""Core services for MyralisBackend."""

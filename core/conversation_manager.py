@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -31,6 +33,11 @@ from core.settings_manager import (
     OFFICIAL_DEFAULT_SETTINGS,
     PASSIVE_GRAPHICS_SETTING_IDS,
 )
+from core.usage_estimator import (
+    UsageEstimator,
+    record_test_miralys_token_usage,
+    record_usage_adaptation,
+)
 from core.test_mode_manager import TestModeManager
 from core.websocket_server import (
     NO_CLIENT_MESSAGE,
@@ -57,6 +64,8 @@ VOICE_SPEED_MULTIPLIERS: dict[str, float] = {
     "fast": 1.10,
     "very_fast": 1.20,
 }
+MIN_THINKING_SECONDS = 5.0
+POST_AUDIO_FINISHED_IDLE_DELAY_SECONDS = 0.5
 
 
 def normalize_runtime_state(value: str | None) -> str:
@@ -159,16 +168,18 @@ class ConversationManager:
         self.last_mood_update_time: float = now
         self.last_interaction_time: float = now
         self.mood_calm_timeout_seconds: float = 20.0
-        self.post_talking_idle_delay_seconds: float = 2.5
+        self.post_talking_idle_delay_seconds: float = 2.0
         self._current_state = AssistantState.IDLE
         self._response_counter = 0
         self._active_response_id: int | None = None
         self._active_audio_mode = "none"
         self._use_websocket_runtime_state = True
+        self.send_mic_level = False
         self.with_ai_realtime_processing = True
         self._backend_ui_action_handler: BackendUIActionCallback | None = None
+        self._active_state_callback: StateCallback | None = None
         self._unreal_turn_lock = threading.Lock()
-        self.emotion_analysis_interval_seconds = 1.5
+        self.emotion_analysis_interval_seconds = 2.0
         self.min_words_for_emotion_analysis = 6
         self.min_seconds_between_mood_changes = 2.0
         self.min_strength_delta_to_send = 0.15
@@ -201,6 +212,13 @@ class ConversationManager:
     def is_ai_realtime_processing_enabled(self) -> bool:
         with self._lock:
             return bool(self.with_ai_realtime_processing)
+
+    def should_send_mic_level(self) -> bool:
+        with self._lock:
+            return bool(getattr(self, "send_mic_level", False))
+
+    def disable_mic_level_messages(self, *, source: str = "local") -> None:
+        self._set_send_mic_level(False, source=source)
 
     def set_backend_ui_action_handler(
         self,
@@ -237,6 +255,16 @@ class ConversationManager:
             except Exception:
                 LOGGER.exception("AI realtime processing listener failed")
 
+    def _set_send_mic_level(self, enabled: bool, *, source: str) -> None:
+        clean_enabled = bool(enabled)
+        with self._lock:
+            self.send_mic_level = clean_enabled
+        LOGGER.info(
+            "Mic level websocket messages %s: source=%s",
+            "enabled" if clean_enabled else "disabled",
+            source,
+        )
+
     def handle_unreal_websocket_message(self, payload: dict[str, Any]) -> bool:
         message_type = payload.get("type")
         if message_type == "settings_update":
@@ -246,6 +274,10 @@ class ConversationManager:
         if message_type == "backend_ui":
             return self._handle_backend_ui_action(payload)
         if message_type in {"user_text", "text_input", "chat_message"}:
+            LOGGER.info(
+                "Received Unreal text payload: %s",
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            )
             return self._handle_unreal_text_input(payload)
         if message_type != "ai_realtime_processing":
             return False
@@ -255,6 +287,12 @@ class ConversationManager:
             LOGGER.warning(
                 "Ignoring invalid ai_realtime_processing enabled value: %r",
                 payload.get("enabled"),
+            )
+            return False
+        if not enabled:
+            LOGGER.info(
+                "Ignoring external ai_realtime_processing=false; "
+                "debug mode must be enabled manually in the Python UI"
             )
             return False
 
@@ -306,6 +344,16 @@ class ConversationManager:
                 LOGGER.info("Custom voice id updated: %s", result.value)
             elif setting_id == "selected_character":
                 LOGGER.info("selected_character stored only: %s", result.value)
+            elif setting_id == "use_custom_personality_prompt":
+                LOGGER.info(
+                    "Custom personality prompt enabled: %s",
+                    _bool_log(bool(result.value)),
+                )
+            elif setting_id == "custom_personality_prompt":
+                LOGGER.info(
+                    "Custom personality prompt updated: %s chars",
+                    len(str(result.value)),
+                )
             else:
                 LOGGER.info(
                     "Customization setting updated: %s=%s",
@@ -330,6 +378,31 @@ class ConversationManager:
 
     def _handle_settings_action(self, payload: dict[str, Any]) -> bool:
         action = str(payload.get("action", "")).strip()
+        if action == "settings_is_open":
+            self._set_send_mic_level(True, source="settings_is_open")
+            return True
+        if action == "settings_is_closed":
+            self._set_send_mic_level(False, source="settings_is_closed")
+            return True
+        if action == "exit_myralis":
+            LOGGER.info("Received exit_myralis from Unreal")
+            self._notify_backend_ui_action("exit_myralis")
+            return True
+        if action == "finish_loading":
+            LOGGER.info("Received finish_loading from Unreal")
+            return True
+        if action == "audio_finished":
+            return self._handle_audio_finished()
+        if action == "mic_level_is_showing":
+            LOGGER.info("Received mic_level_is_showing from Unreal")
+            return True
+        if action == "mic_level_is_not_showing":
+            LOGGER.info("Received mic_level_is_not_showing from Unreal")
+            return True
+        if action == "mic_level_not_showing":
+            LOGGER.info("Received mic_level_not_showing from Unreal")
+            return True
+
         settings_manager = getattr(self.audio_manager, "settings_manager", None)
         if action == "reset_settings_defaults":
             if settings_manager is None:
@@ -357,6 +430,70 @@ class ConversationManager:
             return False
         self._notify_backend_ui_action(action)
         return True
+
+    def _handle_audio_finished(self) -> bool:
+        with self._lock:
+            current_state = getattr(self, "_current_state", AssistantState.IDLE)
+            active_response_id = getattr(self, "_active_response_id", None)
+            state_callback = getattr(self, "_active_state_callback", None)
+
+        if current_state != AssistantState.TALKING:
+            LOGGER.info(
+                "Ignoring audio_finished because current state is %s",
+                current_state.value,
+            )
+            return True
+
+        threading.Thread(
+            target=self._complete_audio_finished_idle_transition,
+            args=(active_response_id, state_callback),
+            name="AudioFinishedIdle",
+            daemon=True,
+        ).start()
+        LOGGER.info(
+            "Received audio_finished from Unreal; scheduling IDLE in %.1fs",
+            POST_AUDIO_FINISHED_IDLE_DELAY_SECONDS,
+        )
+        return True
+
+    def _complete_audio_finished_idle_transition(
+        self,
+        active_response_id: int | None,
+        state_callback: StateCallback | None,
+    ) -> None:
+        time.sleep(POST_AUDIO_FINISHED_IDLE_DELAY_SECONDS)
+
+        with self._lock:
+            if self._current_state != AssistantState.TALKING:
+                return
+            if self._active_response_id != active_response_id:
+                return
+            clean_mood = self.current_mood
+            self._current_state = AssistantState.IDLE
+            self.last_mood_update_time = time.time()
+
+        try:
+            self.runtime_bridge.set_runtime_state(
+                state=AssistantState.IDLE.value,
+                mood=clean_mood,
+            )
+            self._send_runtime_state_over_websocket(
+                AssistantState.IDLE.value,
+                clean_mood,
+            )
+            LOGGER.info(
+                "[RuntimeBridge] state=IDLE mood=%s after_audio_finished_delay=%.1f",
+                clean_mood,
+                POST_AUDIO_FINISHED_IDLE_DELAY_SECONDS,
+            )
+        except Exception:
+            LOGGER.exception("Could not write audio_finished IDLE runtime state")
+
+        if state_callback is not None:
+            state_callback(AssistantState.IDLE)
+        with self._lock:
+            if self._active_state_callback is state_callback:
+                self._active_state_callback = None
 
     def _notify_backend_ui_action(self, action: str) -> None:
         with self._lock:
@@ -419,6 +556,8 @@ class ConversationManager:
 
         try:
             self._begin_runtime_response(settings)
+            with self._lock:
+                self._active_state_callback = state_callback
             if not self.is_ai_realtime_processing_enabled():
                 LOGGER.info("AI realtime processing disabled; using fake/debug flow")
                 LOGGER.info(
@@ -432,6 +571,7 @@ class ConversationManager:
 
             LOGGER.info("AI realtime processing enabled; using premium AI flow")
             self._prepare_for_user_interaction(settings, state_callback)
+            thinking_started_at = time.monotonic()
             self._append_message("user", clean_text)
             openai_settings = settings.get("openai", {})
             history_limit = self._bounded_int(
@@ -468,6 +608,15 @@ class ConversationManager:
                 mood=detected_mood,
             )
             self._append_message("assistant", response.text)
+            if not test_mode_enabled:
+                settings_manager = getattr(self.audio_manager, "settings_manager", None)
+                if settings_manager is not None:
+                    record_usage_adaptation(
+                        settings_manager=settings_manager,
+                        settings=settings,
+                        user_text=clean_text,
+                        assistant_text=response.text,
+                    )
 
             audio_path, used_cached_audio, errors = self._handle_tts_and_playback(
                 response_text=response.text,
@@ -475,7 +624,19 @@ class ConversationManager:
                 settings=settings,
                 test_mode_enabled=test_mode_enabled,
                 state_callback=state_callback,
+                thinking_started_at=thinking_started_at,
             )
+
+            if test_mode_enabled and not used_cached_text:
+                settings_manager = getattr(self.audio_manager, "settings_manager", None)
+                if settings_manager is not None:
+                    root = getattr(settings_manager, "root", None)
+                    usage_snapshot = UsageEstimator(root).build_snapshot(settings)
+                    record_test_miralys_token_usage(
+                        settings_manager=settings_manager,
+                        settings=settings,
+                        coins_used=usage_snapshot.miralys_tokens_per_conversation,
+                    )
 
             return AssistantResult(
                 response=response,
@@ -537,6 +698,7 @@ class ConversationManager:
             mood=debug_mood,
             settings=settings,
             state_callback=state_callback,
+            thinking_started_at=None,
         )
         return AssistantResult(
             response=response,
@@ -553,6 +715,7 @@ class ConversationManager:
         mood: str,
         settings: dict[str, Any],
         state_callback: StateCallback | None,
+        thinking_started_at: float | None,
     ) -> tuple[Path | None, bool]:
         LOGGER.info(
             "AI realtime disabled; no paid TTS generated. "
@@ -563,17 +726,17 @@ class ConversationManager:
         audio_path = current_wav if current_wav.exists() else None
         self._set_active_audio_mode("wav" if audio_path is not None else "none")
 
+        self._wait_for_thinking_window(thinking_started_at)
         self._emit_runtime_state(
             state_callback,
             AssistantState.TALKING,
             mood=clean_mood,
+            emotion_strength=get_emotion_strength_for_mood(clean_mood),
         )
         if audio_path is not None:
             LOGGER.info("WAV ready; sending runtime_state talking audio_mode=wav")
         else:
             LOGGER.info("No current_wav/debug audio available for disabled AI flow")
-
-        self._return_to_idle_after_audio_delay(state_callback)
         return audio_path, audio_path is not None
 
     def build_voice_capture_config(self) -> dict[str, Any]:
@@ -708,6 +871,7 @@ class ConversationManager:
         settings: dict[str, Any],
         test_mode_enabled: bool,
         state_callback: StateCallback | None,
+        thinking_started_at: float | None,
     ) -> tuple[Path | None, bool, list[str]]:
         errors: list[str] = []
         used_cached_audio = False
@@ -730,6 +894,7 @@ class ConversationManager:
                         mood=clean_mood,
                         settings=settings,
                         state_callback=state_callback,
+                        thinking_started_at=thinking_started_at,
                     )
                     return audio_path, used_cached_audio, errors
                 else:
@@ -748,6 +913,7 @@ class ConversationManager:
                         settings=settings,
                         test_mode_enabled=test_mode_enabled,
                         state_callback=state_callback,
+                        thinking_started_at=thinking_started_at,
                     )
                 )
         except Exception as exc:
@@ -759,8 +925,6 @@ class ConversationManager:
                     AssistantState.IDLE,
                     mood=clean_mood,
                 )
-            else:
-                self._return_to_idle_after_audio_delay(state_callback)
 
         return audio_path, used_cached_audio, errors
 
@@ -785,6 +949,7 @@ class ConversationManager:
                 mood=debug_mood,
                 settings=settings,
                 state_callback=state_callback,
+                thinking_started_at=time.monotonic(),
             )
             return audio_path
 
@@ -793,6 +958,32 @@ class ConversationManager:
             mood=DEFAULT_MOOD,
             settings=settings,
             state_callback=state_callback,
+            thinking_started_at=time.monotonic(),
+        )
+        return audio_path
+
+    def test_runtime_lip_sync(
+        self,
+        settings: dict[str, Any],
+        state_callback: StateCallback | None = None,
+    ) -> Path | None:
+        self._begin_runtime_response(settings)
+        self._emit_runtime_state(
+            state_callback,
+            AssistantState.LISTENING,
+            mood=DEFAULT_MOOD,
+        )
+        self._emit_runtime_state(
+            state_callback,
+            AssistantState.THINKING,
+            mood=DEFAULT_MOOD,
+        )
+        audio_path, _talking_started = self._stream_realtime_tts_to_unreal(
+            response_text="Prueba de lip sync en tiempo real para Unreal.",
+            mood="Happy",
+            settings=settings,
+            state_callback=state_callback,
+            thinking_started_at=time.monotonic(),
         )
         return audio_path
 
@@ -803,6 +994,7 @@ class ConversationManager:
         mood: str,
         settings: dict[str, Any],
         state_callback: StateCallback | None,
+        thinking_started_at: float | None,
     ) -> tuple[Path | None, bool]:
         elevenlabs_settings = settings["elevenlabs"]
         clean_mood = normalize_assistant_mood(mood)
@@ -830,10 +1022,22 @@ class ConversationManager:
                 maximum=4,
             )
         websocket_audio_chunk_ms = self._bounded_int(
-            elevenlabs_settings.get("websocket_audio_chunk_ms", 20),
-            default=20,
+            elevenlabs_settings.get("websocket_audio_chunk_ms", 200),
+            default=200,
             minimum=1,
             maximum=1000,
+        )
+        websocket_audio_start_silence_chunks = self._bounded_int(
+            elevenlabs_settings.get("websocket_audio_start_silence_chunks", 2),
+            default=2,
+            minimum=0,
+            maximum=10,
+        )
+        websocket_audio_fade_in_ms = self._bounded_int(
+            elevenlabs_settings.get("websocket_audio_fade_in_ms", 15),
+            default=15,
+            minimum=0,
+            maximum=250,
         )
         websocket_audio_realtime_pacing = bool(
             elevenlabs_settings.get("websocket_audio_realtime_pacing", True)
@@ -841,14 +1045,19 @@ class ConversationManager:
 
         talking_started = False
 
+        def wait_for_thinking_window() -> None:
+            self._wait_for_thinking_window(thinking_started_at)
+
         def mark_talking_started() -> None:
             nonlocal talking_started
             if talking_started:
                 return
+            wait_for_thinking_window()
             self._emit_runtime_state(
                 state_callback,
                 AssistantState.TALKING,
                 mood=clean_mood,
+                emotion_strength=get_emotion_strength_for_mood(clean_mood),
             )
             talking_started = True
 
@@ -865,13 +1074,13 @@ class ConversationManager:
                 save_response_wav=save_response_wav,
                 response_wav_path=self.runtime_bridge.config.response_audio_path,
                 on_audio_start=mark_talking_started,
+                startup_silence_chunks=websocket_audio_start_silence_chunks,
+                fade_in_ms=websocket_audio_fade_in_ms,
                 websocket_audio_chunk_ms=websocket_audio_chunk_ms,
                 websocket_audio_realtime_pacing=websocket_audio_realtime_pacing,
             )
         except Exception:
-            if talking_started:
-                self._return_to_idle_after_audio_delay(state_callback)
-            else:
+            if not talking_started:
                 self._emit_runtime_state(
                     state_callback,
                     AssistantState.IDLE,
@@ -891,9 +1100,7 @@ class ConversationManager:
                     "Local Python audio playback muted; realtime audio was sent to Unreal."
                 )
         finally:
-            if talking_started:
-                self._return_to_idle_after_audio_delay(state_callback)
-            else:
+            if not talking_started:
                 self._emit_runtime_state(
                     state_callback,
                     AssistantState.IDLE,
@@ -910,6 +1117,7 @@ class ConversationManager:
         settings: dict[str, Any],
         test_mode_enabled: bool,
         state_callback: StateCallback | None,
+        thinking_started_at: float | None,
     ) -> tuple[Path | None, bool, bool]:
         used_cached_audio = False
         audio_path: Path | None = None
@@ -932,11 +1140,21 @@ class ConversationManager:
                 voice_settings = dict(ELEVENLABS_MOOD_PROFILES[clean_mood])
                 self._apply_voice_speed_setting(voice_settings, settings)
                 final_voice_id = self._resolve_final_voice_id(settings)
+                wav_output_format = "pcm_16000"
+                requested_output_format = str(
+                    elevenlabs_settings.get("output_format", wav_output_format)
+                )
+                if requested_output_format != wav_output_format:
+                    LOGGER.info(
+                        "WAV mode forcing output_format=%s instead of %s",
+                        wav_output_format,
+                        requested_output_format,
+                    )
                 tts_result = self.elevenlabs_manager.generate_wav(
                     text=tts_text,
                     voice_id=final_voice_id,
                     model_id=str(elevenlabs_settings["model_id"]),
-                    output_format=str(elevenlabs_settings["output_format"]),
+                    output_format=wav_output_format,
                     voice_settings=voice_settings,
                     mood=clean_mood,
                 )
@@ -952,22 +1170,21 @@ class ConversationManager:
                 if not audio_path.exists():
                     raise FileNotFoundError(f"WAV file is not ready: {audio_path}")
                 LOGGER.info("WAV ready; sending runtime_state talking audio_mode=wav")
+                self._wait_for_thinking_window(thinking_started_at)
                 self._emit_runtime_state(
                     state_callback,
                     AssistantState.TALKING,
                     mood=clean_mood,
+                    emotion_strength=get_emotion_strength_for_mood(clean_mood),
                 )
                 talking_started = True
 
-                try:
-                    if self.test_mode_manager.is_audio_enabled(settings):
-                        self.audio_manager.play_audio(audio_path, None)
-                    else:
-                        LOGGER.info(
-                            "Local Python audio playback muted; WAV remains available for Unreal."
-                        )
-                finally:
-                    self._return_to_idle_after_audio_delay(state_callback)
+                if self.test_mode_manager.is_audio_enabled(settings):
+                    self.audio_manager.play_audio(audio_path, None)
+                else:
+                    LOGGER.info(
+                        "Local Python audio playback muted; WAV remains available for Unreal."
+                    )
         except Exception as exc:
             LOGGER.exception("TTS or playback failed")
             if not talking_started:
@@ -1001,6 +1218,9 @@ class ConversationManager:
         with self._lock:
             self._current_state = state
 
+    def emit_external_state(self, state: AssistantState) -> None:
+        self._emit_state(None, state)
+
     def shutdown(self) -> None:
         set_unreal_json_message_handler(None)
         self._calm_stop_event.set()
@@ -1016,7 +1236,7 @@ class ConversationManager:
         self._reset_listening_emotion_tracking()
         if self._interaction_mode(settings) == "text":
             LOGGER.info("Listening emotion analysis skipped: text mode")
-        self._emit_state(state_callback, AssistantState.LISTENING)
+        self._emit_state(state_callback, AssistantState.THINKING)
 
     def _reset_listening_emotion_tracking(self) -> None:
         with self._lock:
@@ -1166,11 +1386,11 @@ class ConversationManager:
                 elevenlabs_settings.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID),
             )
         ).strip()
-        fallback_voice_id = (
+        fallback_voice_id = self._valid_elevenlabs_voice_id(
             selected_voice_id
-            or str(elevenlabs_settings.get("voice_id", "")).strip()
-            or DEFAULT_ELEVENLABS_VOICE_ID
-        )
+        ) or self._valid_elevenlabs_voice_id(
+            str(elevenlabs_settings.get("voice_id", "")).strip()
+        ) or DEFAULT_ELEVENLABS_VOICE_ID
         use_custom_voice = self._bool_setting(
             customization_settings.get("use_custom_voice", False),
             default=False,
@@ -1178,11 +1398,12 @@ class ConversationManager:
 
         if use_custom_voice:
             custom_voice_id = str(customization_settings.get("custom_voice_id", "")).strip()
-            if custom_voice_id:
-                final_voice_id = custom_voice_id
+            valid_custom_voice_id = self._valid_elevenlabs_voice_id(custom_voice_id)
+            if valid_custom_voice_id:
+                final_voice_id = valid_custom_voice_id
             else:
                 LOGGER.warning(
-                    "Custom voice enabled but custom_voice_id is empty; using fallback voice_id=%s",
+                    "Custom voice enabled but custom_voice_id is invalid; using fallback voice_id=%s",
                     fallback_voice_id,
                 )
                 final_voice_id = fallback_voice_id
@@ -1191,6 +1412,14 @@ class ConversationManager:
 
         LOGGER.info("Final voice resolved: %s", final_voice_id)
         return final_voice_id
+
+    def _valid_elevenlabs_voice_id(self, value: Any) -> str:
+        clean_value = str(value or "").strip()
+        if not clean_value:
+            return ""
+        if not re.fullmatch(r"[A-Za-z0-9_-]{8,}", clean_value):
+            return ""
+        return clean_value
 
     def _bool_setting(self, value: Any, *, default: bool) -> bool:
         if isinstance(value, bool):
@@ -1302,38 +1531,17 @@ class ConversationManager:
         if state_callback is not None:
             state_callback(state)
 
-    def _return_to_idle_after_audio_delay(
-        self,
-        state_callback: StateCallback | None,
-    ) -> None:
-        delay_seconds = self.post_talking_idle_delay_seconds
-        if delay_seconds > 0:
-            time.sleep(delay_seconds)
-
-        with self._lock:
-            self._current_state = AssistantState.IDLE
-            clean_mood = self.current_mood
-            self.last_mood_update_time = time.time()
-
-        try:
-            self.runtime_bridge.set_runtime_state(
-                state=AssistantState.IDLE.value,
-                mood=clean_mood,
-            )
-            self._send_runtime_state_over_websocket(
-                AssistantState.IDLE.value,
-                clean_mood,
-            )
+    def _wait_for_thinking_window(self, thinking_started_at: float | None) -> None:
+        if thinking_started_at is None:
+            return
+        elapsed = time.monotonic() - thinking_started_at
+        remaining = MIN_THINKING_SECONDS - elapsed
+        if remaining > 0:
             LOGGER.info(
-                "[RuntimeBridge] state=IDLE mood=%s after_audio_delay=%.1f",
-                clean_mood,
-                delay_seconds,
+                "Delaying TALKING until thinking minimum is met: %.2fs",
+                remaining,
             )
-        except Exception:
-            LOGGER.exception("Could not write delayed IDLE runtime state")
-
-        if state_callback is not None:
-            state_callback(AssistantState.IDLE)
+            time.sleep(remaining)
 
     def _mood_calm_loop(self) -> None:
         while not self._calm_stop_event.wait(self._mood_calm_check_interval()):

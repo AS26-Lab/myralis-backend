@@ -9,13 +9,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from core.runtime_paths import get_project_root as get_runtime_project_root
+from core.runtime_paths import get_runtime_paths
 from core.language import (
     CURRENT_LANGUAGE_SETTING_ID,
     DEFAULT_CURRENT_LANGUAGE,
     normalize_current_language,
     require_current_language,
 )
-from core.personality import parse_personality_traits
+from core.personality import DEFAULT_PERSONALITY_PROMPT, parse_personality_traits
 
 
 LOGGER = logging.getLogger(__name__)
@@ -88,6 +90,8 @@ PASSIVE_GRAPHICS_SETTING_IDS: set[str] = {
 
 CUSTOMIZATION_SETTING_IDS: set[str] = {
     "personality_traits",
+    "use_custom_personality_prompt",
+    "custom_personality_prompt",
     "profanity_filter",
     "voice_id",
     "use_custom_voice",
@@ -107,25 +111,25 @@ OFFICIAL_DEFAULT_SETTINGS: dict[str, Any] = {
     "input_volume": 0.8,
     "input_device": "default",
     "output_device": "default",
-    "stt_engine": "deepgram",
+    "stt_engine": "local",
     "current_language": DEFAULT_CURRENT_LANGUAGE,
     "display_mode": "borderless",
     "fps_limit": "60",
     "performance_profile": "balanced",
-    "openai_model": "GPT-5.4 mini",
-    "response_length": "balanced",
+    "openai_model": "gpt-5.4-mini",
+    "response_length": "short",
     "history_level": "normal",
     "elevenlabs_model": "eleven_turbo_v2_5",
     "voice_speed": "normal",
-    "tts_realtime": True,
+    "tts_realtime": False,
     "listening_emotion_analysis": True,
 }
 
 RESPONSE_LENGTH_MAX_WORDS: dict[str, int] = {
-    "very_short": 45,
-    "short": 80,
-    "balanced": 140,
-    "detailed": 220,
+    "very_short": 36,
+    "short": 64,
+    "balanced": 112,
+    "detailed": 176,
 }
 
 HISTORY_LEVEL_LAST_TURNS: dict[str, int] = {
@@ -136,17 +140,32 @@ HISTORY_LEVEL_LAST_TURNS: dict[str, int] = {
 }
 
 OPENAI_MODEL_IDS: set[str] = {
-    "GPT-5.4 mini",
-    "GPT-5.4 nano",
-    "GPT-5",
-    "GPT-5 mini",
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.4-nano",
 }
 
 OPENAI_LEGACY_MODEL_IDS: dict[str, str] = {
-    "gpt-5.4-mini": "GPT-5.4 mini",
-    "gpt-5.4-nano": "GPT-5.4 nano",
-    "gpt-5": "GPT-5",
-    "gpt-5-mini": "GPT-5 mini",
+    "gpt-5.5": "gpt-5.5",
+    "gpt-5.4": "gpt-5.4",
+    "gpt-5.4-mini": "gpt-5.4-mini",
+    "gpt-5.4-nano": "gpt-5.4-nano",
+    "gpt-5": "gpt-5.5",
+    "gpt-5-mini": "gpt-5.4-mini",
+    "gpt-5.4 mini": "gpt-5.4-mini",
+    "gpt-5.4 nano": "gpt-5.4-nano",
+    "gpt-5 mini": "gpt-5.4-mini",
+    "gpt-5 nano": "gpt-5.4-nano",
+    "gpt-5.4mini": "gpt-5.4-mini",
+    "gpt-5.4nano": "gpt-5.4-nano",
+}
+
+OPENAI_MODEL_PROFILES: dict[str, str] = {
+    "gpt-5.5": "quality",
+    "gpt-5.4": "balanced",
+    "gpt-5.4-mini": "fast",
+    "gpt-5.4-nano": "economy",
 }
 
 ELEVENLABS_MODEL_IDS: set[str] = {
@@ -174,6 +193,8 @@ DEFAULT_ELEVENLABS_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb"
 
 DEFAULT_CUSTOMIZATION_SETTINGS: dict[str, Any] = {
     "personality_traits": "",
+    "use_custom_personality_prompt": False,
+    "custom_personality_prompt": DEFAULT_PERSONALITY_PROMPT,
     "profanity_filter": True,
     "voice_id": DEFAULT_ELEVENLABS_VOICE_ID,
     "use_custom_voice": False,
@@ -222,16 +243,18 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "elevenlabs": {
         "voice_id": DEFAULT_ELEVENLABS_VOICE_ID,
         "model_id": OFFICIAL_DEFAULT_SETTINGS["elevenlabs_model"],
-        "output_format": "pcm_24000",
+        "output_format": "pcm_16000",
         "use_realtime_tts_streaming": OFFICIAL_DEFAULT_SETTINGS["tts_realtime"],
         "save_response_wav": True,
         "optimize_streaming_latency": 2,
-        "websocket_audio_chunk_ms": 20,
+        "websocket_audio_start_silence_chunks": 2,
+        "websocket_audio_fade_in_ms": 15,
+        "websocket_audio_chunk_ms": 200,
         "websocket_audio_realtime_pacing": True,
         "voice_speed": OFFICIAL_DEFAULT_SETTINGS["voice_speed"],
     },
     "deepgram": {
-        "enabled": True,
+        "enabled": False,
         "api_key": "",
         "language": "es",
         "model": "nova-3",
@@ -254,6 +277,31 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "test_mode": {
         "enabled": False,
         "audio_enabled": False,
+        "miralys_tokens_remaining": 0,
+        "miralys_tokens_purchased": 0,
+        "miralys_tokens_used": 0,
+    },
+    "usage_adaptation": {
+        "enabled": True,
+        "alpha": 0.25,
+        "profiles": {
+            "voice": {
+                "samples": 0,
+                "ema_user_words": 10.0,
+                "ema_assistant_words": 32.0,
+                "ema_turn_words": 42.0,
+                "ema_cost_multiplier": 1.0,
+                "last_update_utc": None,
+            },
+            "text": {
+                "samples": 0,
+                "ema_user_words": 8.0,
+                "ema_assistant_words": 28.0,
+                "ema_turn_words": 36.0,
+                "ema_cost_multiplier": 1.0,
+                "last_update_utc": None,
+            },
+        },
     },
 }
 
@@ -261,6 +309,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 DEFAULT_DEVICES: dict[str, Any] = {
     "input_device_index": None,
     "input_device_name": "",
+    "saved_input_device_id": "default",
     "output_device_index": None,
     "output_device_name": "",
     "last_refresh_utc": None,
@@ -269,9 +318,7 @@ DEFAULT_DEVICES: dict[str, Any] = {
 
 def get_project_root() -> Path:
     """Return the writable project root in source and PyInstaller builds."""
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parents[1]
+    return get_runtime_project_root()
 
 
 class SettingsManager:
@@ -279,10 +326,11 @@ class SettingsManager:
 
     def __init__(self, root: Path | None = None) -> None:
         self.root = root or get_project_root()
-        self.config_dir = self.root / "config"
-        self.output_dir = self.root / "output"
+        runtime_paths = get_runtime_paths(self.root)
+        self.config_dir = runtime_paths.config_root
+        self.output_dir = runtime_paths.output_root
         self.audio_output_dir = self.output_dir / "audio"
-        self.logs_output_dir = self.output_dir / "logs"
+        self.logs_output_dir = runtime_paths.logs_root
         self.settings_path = self.config_dir / "settings.json"
         self.devices_path = self.config_dir / "devices.json"
         self._lock = threading.RLock()
@@ -418,6 +466,7 @@ class SettingsManager:
                 {
                     "input_device_index": None,
                     "input_device_name": "",
+                    "saved_input_device_id": "default",
                     "output_device_index": None,
                     "output_device_name": "",
                 }
@@ -447,6 +496,7 @@ class SettingsManager:
                 {
                     "input_device_index": input_device_index,
                     "input_device_name": input_device_name,
+                    "saved_input_device_id": device_id_from_index(input_device_index),
                     "output_device_index": output_device_index,
                     "output_device_name": output_device_name,
                 }
@@ -594,18 +644,24 @@ class SettingsManager:
         openai_settings = settings.get("openai", {})
         if isinstance(openai_settings, dict):
             model = str(openai_settings.get("model", "")).strip()
-            settings["openai_model"] = OPENAI_LEGACY_MODEL_IDS.get(
-                model.lower(),
-                model if model in OPENAI_MODEL_IDS else settings.get(
-                    "openai_model",
-                    OFFICIAL_DEFAULT_SETTINGS["openai_model"],
+            normalized_model = normalize_openai_model_id(
+                model,
+                default=str(
+                    settings.get("openai_model", OFFICIAL_DEFAULT_SETTINGS["openai_model"])
                 ),
             )
+            settings["openai_model"] = normalized_model
+            openai_settings["model"] = normalized_model
             max_words = openai_settings.get("max_response_words")
             settings["response_length"] = _nearest_key_for_int(
                 max_words,
                 RESPONSE_LENGTH_MAX_WORDS,
-                str(settings.get("response_length", "balanced")),
+                str(
+                    settings.get(
+                        "response_length",
+                        OFFICIAL_DEFAULT_SETTINGS["response_length"],
+                    )
+                ),
             )
             history_limit = openai_settings.get("history_limit")
             settings["history_level"] = _nearest_key_for_int(
@@ -715,9 +771,8 @@ def normalize_official_setting_value(setting_id: str, value: Any) -> Any:
     if setting_id == "performance_profile":
         return _require_option(setting_id, value, PERFORMANCE_PROFILE_IDS)
     if setting_id == "openai_model":
-        clean = str(value or "").strip()
-        clean = OPENAI_LEGACY_MODEL_IDS.get(clean.lower(), clean)
-        if clean not in OPENAI_MODEL_IDS:
+        clean = normalize_openai_model_id(value)
+        if clean is None:
             raise ValueError(f"Invalid openai_model: {value!r}")
         return clean
     if setting_id == "response_length":
@@ -732,10 +787,15 @@ def normalize_official_setting_value(setting_id: str, value: Any) -> Any:
 
 
 def normalize_customization_setting_value(setting_id: str, value: Any) -> Any:
-    if setting_id in {"profanity_filter", "use_custom_voice"}:
+    if setting_id in {
+        "profanity_filter",
+        "use_custom_voice",
+        "use_custom_personality_prompt",
+    }:
         return _parse_bool(value)
     if setting_id in {
         "personality_traits",
+        "custom_personality_prompt",
         "voice_id",
         "custom_voice_id",
         "selected_personality",
@@ -834,3 +894,28 @@ def _messages_to_turns(value: Any) -> int:
     except (TypeError, ValueError):
         return 0
     return max(1, (parsed + 1) // 2)
+
+
+def normalize_openai_model_id(
+    value: Any,
+    *,
+    default: str | None = None,
+) -> str | None:
+    clean = str(value or "").strip()
+    if not clean:
+        return default
+
+    canonical = OPENAI_LEGACY_MODEL_IDS.get(clean.lower(), clean.lower())
+    if canonical in OPENAI_MODEL_IDS:
+        return canonical
+    return default
+
+
+def openai_model_profile(model_id: Any) -> str:
+    canonical = normalize_openai_model_id(
+        model_id,
+        default=OFFICIAL_DEFAULT_SETTINGS["openai_model"],
+    )
+    if canonical is None:
+        canonical = OFFICIAL_DEFAULT_SETTINGS["openai_model"]
+    return OPENAI_MODEL_PROFILES.get(canonical, "balanced")

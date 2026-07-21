@@ -26,11 +26,12 @@ START_MESSAGE = "START"
 END_MESSAGE = "END"
 DEFAULT_AUDIO_SAMPLE_RATE = 24000
 DEFAULT_AUDIO_CHANNELS = 1
-DEFAULT_AUDIO_CHUNK_MS = 20
+DEFAULT_AUDIO_CHUNK_MS = 40
 DEFAULT_AUDIO_REALTIME_PACING = True
 START_TO_FIRST_CHUNK_DELAY_SECONDS = 0.02
 IncomingJsonHandler = Callable[[dict[str, Any]], None]
 ConnectionStatusHandler = Callable[[bool], None]
+OutgoingMessageHandler = Callable[[dict[str, Any]], None]
 
 
 class UnrealWebSocketServer:
@@ -49,6 +50,7 @@ class UnrealWebSocketServer:
         self._audio_realtime_pacing = DEFAULT_AUDIO_REALTIME_PACING
         self._incoming_json_handler: IncomingJsonHandler | None = None
         self._connection_status_handlers: list[ConnectionStatusHandler] = []
+        self._outgoing_message_handlers: list[OutgoingMessageHandler] = []
 
     def start(self) -> bool:
         with self._lock:
@@ -195,6 +197,22 @@ class UnrealWebSocketServer:
             if handler in self._connection_status_handlers:
                 self._connection_status_handlers.remove(handler)
 
+    def add_outgoing_message_handler(
+        self,
+        handler: OutgoingMessageHandler,
+    ) -> None:
+        with self._lock:
+            if handler not in self._outgoing_message_handlers:
+                self._outgoing_message_handlers.append(handler)
+
+    def remove_outgoing_message_handler(
+        self,
+        handler: OutgoingMessageHandler,
+    ) -> None:
+        with self._lock:
+            if handler in self._outgoing_message_handlers:
+                self._outgoing_message_handlers.remove(handler)
+
     def stream_wav(
         self,
         wav_path: str,
@@ -304,6 +322,19 @@ class UnrealWebSocketServer:
             except Exception:
                 LOGGER.exception("WebSocket connection status handler failed")
 
+    def _notify_outgoing_message(self, event: dict[str, Any]) -> None:
+        with self._lock:
+            handlers = list(self._outgoing_message_handlers)
+        if not handlers:
+            return
+
+        clean_event = dict(event)
+        for handler in handlers:
+            try:
+                handler(clean_event)
+            except Exception:
+                LOGGER.exception("WebSocket outgoing message handler failed")
+
     def _handle_incoming_message(self, message: str | bytes) -> None:
         if isinstance(message, bytes):
             try:
@@ -385,6 +416,7 @@ class UnrealWebSocketServer:
             LOGGER.warning(NO_CLIENT_MESSAGE)
             return False
         await self._send_to_client(client, message)
+        self._notify_outgoing_message(_build_text_outgoing_event(message))
         return True
 
     async def _send_binary_async(self, data: bytes) -> bool:
@@ -393,6 +425,7 @@ class UnrealWebSocketServer:
             LOGGER.warning(NO_CLIENT_MESSAGE)
             return False
         await self._send_to_client(client, data)
+        self._notify_outgoing_message(_build_binary_outgoing_event(data))
         return True
 
     async def _send_json_to_unreal_async(self, payload: dict[str, Any]) -> bool:
@@ -415,6 +448,9 @@ class UnrealWebSocketServer:
 
         if sent_any:
             _log_json_sent(payload)
+            self._notify_outgoing_message(
+                _build_json_outgoing_event(payload, client_count=len(clients))
+            )
         else:
             _log_json_no_client(payload)
         return sent_any
@@ -432,6 +468,13 @@ class UnrealWebSocketServer:
         pacing = self._resolve_audio_realtime_pacing(realtime_pacing)
         await self._send_to_client(client, START_MESSAGE)
         LOGGER.info("WS AUDIO START sent")
+        self._notify_outgoing_message(
+            _build_audio_control_outgoing_event(
+                "audio_start",
+                START_MESSAGE,
+                realtime_pacing=pacing,
+            )
+        )
         if pacing:
             await asyncio.sleep(START_TO_FIRST_CHUNK_DELAY_SECONDS)
         return True
@@ -466,6 +509,9 @@ class UnrealWebSocketServer:
 
         await self._send_to_client(client, END_MESSAGE)
         LOGGER.info("WS AUDIO END sent")
+        self._notify_outgoing_message(
+            _build_audio_control_outgoing_event("audio_end", END_MESSAGE)
+        )
         return True
 
     async def _stream_wav_async(
@@ -503,6 +549,14 @@ class UnrealWebSocketServer:
         try:
             await self._send_to_client(client, START_MESSAGE)
             LOGGER.info("WS AUDIO START sent")
+            self._notify_outgoing_message(
+                _build_audio_control_outgoing_event(
+                    "audio_start",
+                    START_MESSAGE,
+                    realtime_pacing=pacing,
+                    source="wav_stream",
+                )
+            )
             if pacing:
                 await asyncio.sleep(START_TO_FIRST_CHUNK_DELAY_SECONDS)
             for index in range(0, len(pcm_data), bytes_per_chunk):
@@ -517,6 +571,13 @@ class UnrealWebSocketServer:
                 )
             await self._send_to_client(client, END_MESSAGE)
             LOGGER.info("WS AUDIO END sent")
+            self._notify_outgoing_message(
+                _build_audio_control_outgoing_event(
+                    "audio_end",
+                    END_MESSAGE,
+                    source="wav_stream",
+                )
+            )
             return True
         except ConnectionClosed:
             LOGGER.warning(NO_CLIENT_MESSAGE)
@@ -542,6 +603,15 @@ class UnrealWebSocketServer:
             len(chunk),
             chunk_ms,
             _bool_log(realtime_pacing),
+        )
+        self._notify_outgoing_message(
+            {
+                "transport": "binary",
+                "type": "audio_chunk",
+                "bytes": len(chunk),
+                "chunk_ms": chunk_ms,
+                "realtime_pacing": realtime_pacing,
+            }
         )
         if realtime_pacing:
             await asyncio.sleep(chunk_ms / 1000.0)
@@ -657,6 +727,55 @@ def _bool_log(value: bool) -> str:
     return "true" if value else "false"
 
 
+def _build_json_outgoing_event(
+    payload: dict[str, Any],
+    *,
+    client_count: int,
+) -> dict[str, Any]:
+    return {
+        "transport": "json",
+        "type": str(payload.get("type", "json") or "json"),
+        "payload": dict(payload),
+        "client_count": client_count,
+    }
+
+
+def _build_text_outgoing_event(message: str) -> dict[str, Any]:
+    if message == START_MESSAGE:
+        return _build_audio_control_outgoing_event("audio_start", message)
+    if message == END_MESSAGE:
+        return _build_audio_control_outgoing_event("audio_end", message)
+    return {
+        "transport": "text",
+        "type": "text",
+        "message": message,
+        "bytes": len(message.encode("utf-8")),
+    }
+
+
+def _build_binary_outgoing_event(data: bytes) -> dict[str, Any]:
+    return {
+        "transport": "binary",
+        "type": "binary",
+        "bytes": len(data),
+    }
+
+
+def _build_audio_control_outgoing_event(
+    message_type: str,
+    message: str,
+    **extra: Any,
+) -> dict[str, Any]:
+    event: dict[str, Any] = {
+        "transport": "text",
+        "type": message_type,
+        "message": message,
+        "bytes": len(message.encode("utf-8")),
+    }
+    event.update(extra)
+    return event
+
+
 def _log_json_sent(payload: dict[str, Any]) -> None:
     if payload.get("type") == "runtime_state":
         emotion_strength = payload.get("emotion_strength", 0.0)
@@ -747,6 +866,18 @@ def remove_websocket_connection_status_handler(
     handler: ConnectionStatusHandler,
 ) -> None:
     _SERVER.remove_connection_status_handler(handler)
+
+
+def add_websocket_outgoing_message_handler(
+    handler: OutgoingMessageHandler,
+) -> None:
+    _SERVER.add_outgoing_message_handler(handler)
+
+
+def remove_websocket_outgoing_message_handler(
+    handler: OutgoingMessageHandler,
+) -> None:
+    _SERVER.remove_outgoing_message_handler(handler)
 
 
 def send_ws_text(message: str) -> Future[bool] | None:

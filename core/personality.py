@@ -7,6 +7,17 @@ from typing import Any
 LOGGER = logging.getLogger(__name__)
 
 
+DEFAULT_PERSONALITY_PROMPT = (
+    "Eres Myralis, una asistente de inteligencia artificial conversacional. "
+    "Habla de forma natural, clara y amigable, adaptando tu estilo al contexto "
+    "y a las necesidades del usuario. Tu objetivo es mantener conversaciones "
+    "utiles, agradables y faciles de entender.\n\n"
+    "Responde con precision y sinceridad. Si algo no esta claro, pide mas "
+    "informacion antes de asumir detalles. Si no sabes algo o no tienes "
+    "suficiente informacion, dilo de forma transparente. Prioriza siempre la "
+    "utilidad, la claridad y una experiencia de conversacion fluida."
+)
+
 OFFICIAL_CUSTOMIZATION_TRAITS: dict[str, str] = {
     "alegre": "Mantiene un tono positivo y optimista sin exagerar.",
     "empatica": "Reconoce emociones del usuario y responde con comprension emocional.",
@@ -50,23 +61,38 @@ def build_customization_personality_prompt(
     customization_settings: dict[str, Any] | None,
 ) -> str:
     if not isinstance(customization_settings, dict):
-        return ""
+        customization_settings = {}
 
+    personality_prompt = _active_personality_prompt(customization_settings)
     traits = parse_personality_traits(
         customization_settings.get("personality_traits", "")
     )
-    if not traits:
-        return ""
 
     lines = [
         "Customization / Personality:",
-        "Aplica estos rasgos de forma moderada como preferencias de tono y comportamiento.",
-        "Estos rasgos no reemplazan el prompt base, el formato JSON requerido ni las reglas de seguridad.",
+        "Prompt de personalidad activo:",
+        personality_prompt,
+        "",
+        "Aplica los rasgos listados, si existen, de forma moderada como preferencias de tono y comportamiento.",
+        "El prompt de personalidad y los rasgos no reemplazan el prompt base, el formato JSON requerido ni las reglas de seguridad.",
         "No uses insultos, acoso, contenido abusivo ni contenido sexualizado por causa de estos rasgos.",
     ]
     for trait in traits:
         lines.append(f"- {trait}: {OFFICIAL_CUSTOMIZATION_TRAITS[trait]}")
     return "\n".join(lines)
+
+
+def _active_personality_prompt(customization_settings: dict[str, Any]) -> str:
+    use_custom_prompt = _bool_value_or_default(
+        customization_settings.get("use_custom_personality_prompt", False),
+        False,
+    )
+    custom_prompt = str(
+        customization_settings.get("custom_personality_prompt", "")
+    ).strip()
+    if use_custom_prompt and custom_prompt:
+        return custom_prompt
+    return DEFAULT_PERSONALITY_PROMPT
 
 
 def build_profanity_filter_prompt(

@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from core.runtime_paths import get_runtime_paths
+from core.settings_manager import normalize_openai_model_id
+
 try:
     from dotenv import load_dotenv
 except ImportError:  # pragma: no cover - handled at runtime for clearer UX.
@@ -53,6 +56,10 @@ class OpenAIManager:
         system_prompt: str,
     ) -> AIResponse:
         client = self._get_client()
+        model = (
+            normalize_openai_model_id(model, default="gpt-5.4-mini")
+            or "gpt-5.4-mini"
+        )
         input_messages = [
             {"role": message["role"], "content": message["content"]}
             for message in history
@@ -129,7 +136,12 @@ class OpenAIManager:
                 "openai is not installed. Run pip install -r requirements.txt."
             )
 
-        load_dotenv(self.root / ".env")
+        runtime_paths = get_runtime_paths(self.root)
+        external_env = runtime_paths.external_config_root / ".env"
+        if external_env.exists():
+            load_dotenv(external_env)
+        elif (self.root / ".env").exists():
+            load_dotenv(self.root / ".env")
         api_key = os.getenv("OPENAI_API_KEY", "").strip()
         if not api_key:
             raise OpenAIManagerError("OPENAI_API_KEY is missing in .env.")

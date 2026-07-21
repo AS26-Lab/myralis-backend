@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from core.conversation_manager import ConversationManager
+from core.conversation_manager import AssistantState, ConversationManager
+from core.personality import DEFAULT_PERSONALITY_PROMPT
 from core.settings_manager import SettingsManager
 
 
@@ -52,12 +53,22 @@ class OfficialSettingsTests(unittest.TestCase):
             0.0,
         )
 
+    def test_talk_hotkey_default_is_f8(self) -> None:
+        self.assertEqual(
+            self.settings_manager.get_settings()["talk_hotkey"],
+            "F8",
+        )
+        self.assertEqual(
+            self.settings_manager.get_settings()["app"]["hotkey"],
+            "F8",
+        )
+
     def test_official_option_values_are_persisted(self) -> None:
         updates = {
             "interaction_mode": "text",
             "neutral_return_time": 25,
             "stt_engine": "local",
-            "openai_model": "GPT-5.4 nano",
+            "openai_model": "gpt-5.4-nano",
             "response_length": "detailed",
             "history_level": "extended",
             "elevenlabs_model": "eleven_v3",
@@ -76,7 +87,8 @@ class OfficialSettingsTests(unittest.TestCase):
         for setting_id, value in updates.items():
             self.assertEqual(settings[setting_id], value)
         self.assertEqual(settings["app"]["neutral_return_time"], 25)
-        self.assertEqual(settings["openai"]["max_response_words"], 220)
+        self.assertEqual(settings["openai"]["model"], "gpt-5.4-nano")
+        self.assertEqual(settings["openai"]["max_response_words"], 176)
         self.assertEqual(settings["openai"]["history_limit"], 24)
         self.assertEqual(settings["elevenlabs"]["model_id"], "eleven_v3")
 
@@ -179,7 +191,7 @@ class OfficialSettingsTests(unittest.TestCase):
 
         self.assertTrue(handled)
         settings = self.settings_manager.get_settings()
-        self.assertTrue(settings["tts_realtime"])
+        self.assertFalse(settings["tts_realtime"])
         self.assertEqual(settings["interaction_mode"], "voice")
         self.assertEqual(settings["neutral_return_time"], 45)
         self.assertEqual(settings["avatar_voice_volume"], 0.8)
@@ -187,10 +199,11 @@ class OfficialSettingsTests(unittest.TestCase):
         self.assertEqual(settings["input_volume"], 0.8)
         self.assertEqual(settings["input_device"], "default")
         self.assertEqual(settings["output_device"], "default")
-        self.assertEqual(settings["stt_engine"], "deepgram")
+        self.assertEqual(settings["stt_engine"], "local")
         self.assertTrue(settings["listening_emotion_analysis"])
-        self.assertEqual(settings["openai_model"], "GPT-5.4 mini")
-        self.assertEqual(settings["response_length"], "balanced")
+        self.assertEqual(settings["openai_model"], "gpt-5.4-mini")
+        self.assertEqual(settings["openai"]["model"], "gpt-5.4-mini")
+        self.assertEqual(settings["response_length"], "short")
         self.assertEqual(settings["history_level"], "normal")
         self.assertEqual(settings["elevenlabs_model"], "eleven_turbo_v2_5")
         self.assertEqual(settings["voice_speed"], "normal")
@@ -198,9 +211,14 @@ class OfficialSettingsTests(unittest.TestCase):
         self.assertEqual(settings["display_mode"], "borderless")
         self.assertEqual(settings["fps_limit"], "60")
         self.assertEqual(settings["performance_profile"], "balanced")
-        self.assertEqual(settings["elevenlabs"]["use_realtime_tts_streaming"], True)
+        self.assertEqual(settings["elevenlabs"]["use_realtime_tts_streaming"], False)
         self.assertEqual(settings["customization"]["selected_character"], "Panfila")
         self.assertTrue(settings["customization"]["use_custom_voice"])
+        self.assertFalse(settings["customization"]["use_custom_personality_prompt"])
+        self.assertEqual(
+            settings["customization"]["custom_personality_prompt"],
+            DEFAULT_PERSONALITY_PROMPT,
+        )
 
     def test_customization_update_and_reset_preserves_general_settings(self) -> None:
         manager = ConversationManager.__new__(ConversationManager)
@@ -248,6 +266,11 @@ class OfficialSettingsTests(unittest.TestCase):
         self.assertEqual(settings["fps_limit"], "unlimited")
         self.assertEqual(settings["performance_profile"], "ultra")
         self.assertEqual(settings["customization"]["personality_traits"], "")
+        self.assertFalse(settings["customization"]["use_custom_personality_prompt"])
+        self.assertEqual(
+            settings["customization"]["custom_personality_prompt"],
+            DEFAULT_PERSONALITY_PROMPT,
+        )
         self.assertTrue(settings["customization"]["profanity_filter"])
         self.assertEqual(
             settings["customization"]["voice_id"],
@@ -300,6 +323,93 @@ class OfficialSettingsTests(unittest.TestCase):
             )
 
         self.assertFalse(handled)
+
+    def test_settings_actions_toggle_mic_level_messages(self) -> None:
+        manager = ConversationManager.__new__(ConversationManager)
+        manager._lock = threading.RLock()
+        manager.audio_manager = SimpleNamespace(settings_manager=self.settings_manager)
+
+        self.assertFalse(manager.should_send_mic_level())
+
+        handled = manager.handle_unreal_websocket_message(
+            {"type": "settings_action", "action": "settings_is_open"}
+        )
+
+        self.assertTrue(handled)
+        self.assertTrue(manager.should_send_mic_level())
+
+        handled = manager.handle_unreal_websocket_message(
+            {"type": "settings_action", "action": "settings_is_closed"}
+        )
+
+        self.assertTrue(handled)
+        self.assertFalse(manager.should_send_mic_level())
+
+    def test_exit_myralis_settings_action_is_forwarded(self) -> None:
+        manager = ConversationManager.__new__(ConversationManager)
+        manager._lock = threading.RLock()
+        manager.audio_manager = SimpleNamespace(settings_manager=self.settings_manager)
+        actions: list[str] = []
+        manager._backend_ui_action_handler = actions.append
+
+        handled = manager.handle_unreal_websocket_message(
+            {"type": "settings_action", "action": "exit_myralis"}
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(actions, ["exit_myralis"])
+
+    def test_settings_actions_finish_loading_is_handled(self) -> None:
+        manager = ConversationManager.__new__(ConversationManager)
+        manager._lock = threading.RLock()
+        manager.audio_manager = SimpleNamespace(settings_manager=self.settings_manager)
+
+        handled = manager.handle_unreal_websocket_message(
+            {"type": "settings_action", "action": "finish_loading"}
+        )
+
+        self.assertTrue(handled)
+
+    def test_audio_finished_action_is_handled(self) -> None:
+        manager = ConversationManager.__new__(ConversationManager)
+        manager._lock = threading.RLock()
+        manager.audio_manager = SimpleNamespace(settings_manager=self.settings_manager)
+        manager._current_state = AssistantState.IDLE
+        manager._active_response_id = None
+        manager._active_state_callback = None
+        manager.current_mood = "Neutral"
+
+        handled = manager.handle_unreal_websocket_message(
+            {"type": "settings_action", "action": "audio_finished"}
+        )
+
+        self.assertTrue(handled)
+
+    def test_settings_actions_accept_mic_level_visibility(self) -> None:
+        manager = ConversationManager.__new__(ConversationManager)
+        manager._lock = threading.RLock()
+        manager.audio_manager = SimpleNamespace(settings_manager=self.settings_manager)
+
+        handled = manager.handle_unreal_websocket_message(
+            {"type": "settings_action", "action": "mic_level_is_showing"}
+        )
+
+        self.assertTrue(handled)
+        self.assertFalse(manager.should_send_mic_level())
+
+        handled = manager.handle_unreal_websocket_message(
+            {"type": "settings_action", "action": "mic_level_is_not_showing"}
+        )
+
+        self.assertTrue(handled)
+        self.assertFalse(manager.should_send_mic_level())
+
+        handled = manager.handle_unreal_websocket_message(
+            {"type": "settings_action", "action": "mic_level_not_showing"}
+        )
+
+        self.assertTrue(handled)
+        self.assertFalse(manager.should_send_mic_level())
 
     def test_generic_reset_defaults_action_is_not_handled(self) -> None:
         manager = ConversationManager.__new__(ConversationManager)

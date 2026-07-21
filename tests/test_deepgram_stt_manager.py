@@ -2,6 +2,7 @@ import json
 import os
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
@@ -53,6 +54,37 @@ class DeepgramSTTManagerTests(unittest.TestCase):
         self.assertEqual(query["endpointing"], ["300"])
         self.assertEqual(query["utterance_end_ms"], ["1000"])
         self.assertNotIn("secret-key", url)
+
+    def test_effective_config_uses_device_compatible_sample_rate(self) -> None:
+        manager = DeepgramSTTManager(Path.cwd())
+        config = DeepgramSTTConfig(enabled=True, api_key="secret-key")
+
+        def check_input_settings(**kwargs: object) -> None:
+            samplerate = int(kwargs["samplerate"])
+            if samplerate != 48000:
+                raise ValueError("Invalid sample rate")
+
+        with patch(
+            "core.deepgram_stt_manager.sd",
+            SimpleNamespace(
+                query_devices=lambda: [
+                    {
+                        "name": "Mic Realtek",
+                        "max_input_channels": 1,
+                        "max_output_channels": 0,
+                        "default_samplerate": 48000,
+                    }
+                ],
+                check_input_settings=check_input_settings,
+            ),
+        ):
+            effective = manager._effective_config_for_input_device(config, 0)
+
+        self.assertEqual(effective.sample_rate, 48000)
+        url = manager._build_listen_url(effective)
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query)
+        self.assertEqual(query["sample_rate"], ["48000"])
 
     def test_partial_and_final_transcript_callbacks(self) -> None:
         partials: list[str] = []
