@@ -2221,7 +2221,7 @@ class MainWindow(QMainWindow):
     def _can_open_technical_panel(self) -> bool:
         context = getattr(self, "_authorization_context", None)
         if context is None:
-            return True
+            return False
         return bool(getattr(context, "can_open_technical_panel", False))
 
     def _lock_down_debug_state(self) -> None:

@@ -2,25 +2,18 @@
 
 import json
 import logging
-import os
 import threading
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
-try:
-    import psycopg
-except Exception:  # pragma: no cover - optional during bootstrap
-    psycopg = None
+from core.backend_identity import OFFICIAL_BACKEND_SERVICE_NAME
 
 LOGGER = logging.getLogger(__name__)
 
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 8766
-_SERVICE_NAME = "bus-telemetry-api"
-_DEFAULT_DATABASE_URL = (
-    "postgresql://bus_telemetry_dev:bus_telemetry_dev_password@127.0.0.1:5432/"
-    "bus_telemetry_dev"
-)
+_SERVICE_NAME = OFFICIAL_BACKEND_SERVICE_NAME
 
 _server_lock = threading.RLock()
 _server_thread: threading.Thread | None = None
@@ -33,24 +26,25 @@ class _HealthHandler(BaseHTTPRequestHandler):
     server_version = "MyralisHealth/1.0"
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        path = self.path.rstrip("/")
-        if path == "/health":
-            self._write_json(200, {"status": "ok", "service": _SERVICE_NAME})
+        if self.path.rstrip("/") != "/health":
+            self.send_response(404)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps({"ok": False, "reason": "not_found"}).encode("utf-8")
+            )
             return
 
-        if path == "/health/database":
-            connected = _database_is_connected()
-            if connected:
-                self._write_json(200, {"status": "ok", "database": "connected"})
-            else:
-                self._write_json(503, {"status": "error", "database": "disconnected"})
-            return
-
-        self._write_json(404, {"ok": False, "reason": "not_found"})
-
-    def _write_json(self, status_code: int, payload: dict[str, object]) -> None:
+        payload = {
+            "ok": True,
+            "service": _SERVICE_NAME,
+            "status": "running",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "websocket_running": _get_websocket_running(),
+            "authorized_session": _get_authorized_session(),
+        }
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(status_code)
+        self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -59,24 +53,6 @@ class _HealthHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A003 - API signature
         LOGGER.debug("health_http: " + format, *args)
 
-
-def _database_url() -> str:
-    return os.getenv("DATABASE_URL", "").strip() or _DEFAULT_DATABASE_URL
-
-
-def _database_is_connected() -> bool:
-    if psycopg is None:
-        return False
-
-    try:
-        with psycopg.connect(_database_url(), connect_timeout=3) as connection:
-            with connection.cursor() as cursor:
-                cursor.execute("SELECT 1")
-                cursor.fetchone()
-        return True
-    except Exception:
-        LOGGER.debug("Database health check failed", exc_info=True)
-        return False
 
 def _get_websocket_running() -> bool:
     with _server_lock:
